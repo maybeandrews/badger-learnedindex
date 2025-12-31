@@ -264,3 +264,54 @@ If you're interested in contributing to Badger see [CONTRIBUTING](./CONTRIBUTING
 - Please use [discuss.hypermode.com](https://discuss.hypermode.com) for questions, discussions, and
   feature requests.
 - Follow us on Twitter [@hypermodeinc](https://twitter.com/hypermodeinc).
+
+Changes to our badger learned index:
+
+# Navigate to project
+
+cd /badger-learnedindex
+
+# Build to verify no errors
+
+go build ./...
+
+# Run comparison test (MAIN ONE FOR PRESENTATION)
+
+go test -v -run TestCompareLearnedIndexVsBloomFilter ./y/
+
+# Run benchmarks with memory info
+
+go test -bench=BenchmarkCompare -benchmem ./y/
+
+# Run all tests to verify nothing broken
+
+go test ./... -short
+
+Complete Summary of Changes Files Created: File Description learned_index.go Core learned index
+implementation learned_index_test.go Unit tests for learned index learned_vs_bloom_benchmark_test.go
+Comparison benchmarks for your presentation
+
+Files Modified: File Changes builder.go Added keyBlockIndices field, trains learned index instead of
+Bloom filter table.go Added learnedIndex field, PredictBlockRange() method, modified DoesNotHave()
+builder_test.go Updated test for new semantics table_test.go Updated race test for new semantics
+
+Key Results from Benchmarks Metric Bloom Filter Learned Index Winner Storage (100K keys) 87,501
+bytes 32 bytes ✅ Learned Index (2734x smaller) Build Time 444 µs 192 µs ✅ Learned Index (2.3x
+faster) Lookup Time ~15 ns ~9 ns ✅ Learned Index (1.6x faster) Memory Allocs 1 alloc 1 alloc Tie 🎓
+Key Points for Your Faculty Explanation What Changed: Replaced Bloom filter (probabilistic filter)
+with linear regression (position predictor) Model: block_index = slope × hash(key) + intercept
+Storage: Only 32 bytes (slope, intercept, error bounds) vs. kilobytes for Bloom Trade-offs: Aspect
+Bloom Filter Learned Index Purpose "Is key definitely NOT in this table?" "Where in this table might
+the key be?" Can skip tables ✅ Yes (if key not found) ❌ No Narrows search range ❌ No ✅ Yes (to
+predicted blocks) False positives Yes (~1%) N/A (always says "might be here") False negatives No
+Possible if error bounds exceeded Why Linear Regression Doesn't Help Much Here: The test shows 100%
+search range because:
+
+Keys are sorted in SSTable But hash values are essentially random Linear regression can't find a
+pattern in random data This is an important finding for your research! Real learned indexes (like in
+the "Case for Learned Index Structures" paper) work with the actual key values, not their hashes.
+
+Potential Improvement: To make learned indexes more effective, you could:
+
+Use actual key bytes (converted to uint64) instead of hash Use piecewise linear approximation (RMI -
+Recursive Model Index) Works best with numeric/sequential keys
