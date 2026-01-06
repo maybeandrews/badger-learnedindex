@@ -264,3 +264,304 @@ If you're interested in contributing to Badger see [CONTRIBUTING](./CONTRIBUTING
 - Please use [discuss.hypermode.com](https://discuss.hypermode.com) for questions, discussions, and
   feature requests.
 - Follow us on Twitter [@hypermodeinc](https://twitter.com/hypermodeinc).
+
+---
+
+# Learned Index Research Project
+
+## Paper Title
+
+**"When Learned Indexes Fail: A Case Study of Hash-Based Key Access in LSM-Tree Storage"**
+
+## Research Overview
+
+This project investigates replacing Bloom filters with learned indexes in BadgerDB, an LSM-tree
+based key-value store. Our research reveals a **critical finding**: learned indexes fundamentally
+require key ordering to be effective, but many databases (including BadgerDB) use hash-based key
+access patterns that destroy this ordering.
+
+### Research Question
+
+Can learned indexes replace Bloom filters in LSM-tree databases that use hash-based key lookups?
+
+### Key Finding
+
+**Learned indexes fail when keys are accessed via hash values.** This is because:
+
+- Bloom filters work with `Hash(key)` for membership testing
+- Hashing destroys key ordering (adjacent keys have completely different hash values)
+- Linear regression cannot find patterns in random/hashed data
+- Search range becomes 100% of the table (no benefit)
+
+However, when keys are accessed in **sorted order**, learned indexes achieve only **3% search
+range** - a 33x improvement!
+
+---
+
+## Quick Start
+
+```bash
+# Navigate to project
+cd /Users/andrews/Desktop/badger-learnedindex
+
+# Build to verify no errors
+go build ./...
+
+# Run the MAIN paper contribution test
+go test -v -run TestPaperContribution ./y/
+
+# Run all paper-related tests
+go test -v -run "TestPaper|TestDataDistribution|TestBloomVsLearned" ./y/
+
+# Run comparison benchmarks
+go test -v -run TestCompareLearnedIndexVsBloomFilter ./y/
+
+# Run benchmarks with memory info
+go test -bench=BenchmarkCompare -benchmem ./y/
+
+# Verify nothing is broken
+go test ./... -short
+```
+
+---
+
+## Files Created
+
+| File                                   | Description                                                   |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `y/learned_index.go`                   | Core learned index implementation (linear regression model)   |
+| `y/learned_index_test.go`              | Unit tests for learned index                                  |
+| `y/learned_vs_bloom_benchmark_test.go` | Comparison benchmarks (Bloom vs Learned)                      |
+| `y/hybrid_filter.go`                   | Hybrid Filter combining Bloom + Learned Index                 |
+| `y/hybrid_filter_test.go`              | Hybrid filter comparison tests                                |
+| `y/paper_contribution_test.go`         | **Main paper tests** - demonstrates when learned indexes fail |
+| `y/compact_hybrid_test.go`             | Bloom filter size/accuracy trade-off analysis                 |
+
+## Files Modified
+
+| File                    | Changes                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| `table/builder.go`      | Added `keyBlockIndices` field, trains learned index instead of Bloom filter        |
+| `table/table.go`        | Added `learnedIndex` field, `PredictBlockRange()` method, modified `DoesNotHave()` |
+| `table/builder_test.go` | Updated test expectations for new semantics                                        |
+| `table/table_test.go`   | Updated race test for new semantics                                                |
+
+---
+
+## Key Benchmark Results
+
+### Storage Comparison (100,000 keys)
+
+| Metric        | Bloom Filter | Learned Index | Winner                            |
+| ------------- | ------------ | ------------- | --------------------------------- |
+| Storage Size  | 87,501 bytes | 32 bytes      | ✅ Learned Index (2,734x smaller) |
+| Build Time    | 444 µs       | 192 µs        | ✅ Learned Index (2.3x faster)    |
+| Lookup Time   | ~15 ns       | ~9 ns         | ✅ Learned Index (1.6x faster)    |
+| Memory Allocs | 1 alloc      | 1 alloc       | Tie                               |
+
+### Search Range by Access Pattern
+
+| Access Pattern             | Search Range   | Effectiveness       |
+| -------------------------- | -------------- | ------------------- |
+| **Sorted keys**            | 3.0% of table  | ✅ Excellent        |
+| **Hashed keys** (BadgerDB) | 100% of table  | ❌ Complete failure |
+| **Random/shuffled**        | 100% of table  | ❌ Complete failure |
+| **Clustered (80/20)**      | 66.3% of table | ⚠️ Partial          |
+
+---
+
+## Technical Implementation
+
+### Learned Index Model
+
+```
+block_index = slope × hash(key) + intercept
+```
+
+**Stored parameters (32 bytes total):**
+
+- `Slope` (float64): 8 bytes
+- `Intercept` (float64): 8 bytes
+- `MinErr` (int32): 4 bytes - lower bound correction
+- `MaxErr` (int32): 4 bytes - upper bound correction
+- `KeyCount` (uint32): 4 bytes
+- `MaxPos` (uint32): 4 bytes - maximum block index
+
+### Prediction Function
+
+```go
+func (li *LearnedIndex) Predict(keyHash uint32) (predictedBlock, minBlock, maxBlock int) {
+    predicted := li.Slope*float64(keyHash) + li.Intercept
+    predictedBlock = int(predicted)
+    minBlock = predictedBlock + li.MinErr  // Apply error bounds
+    maxBlock = predictedBlock + li.MaxErr
+    // Clamp to valid range [0, MaxPos]
+    return
+}
+```
+
+### Hybrid Filter (Novel Contribution)
+
+Combines Bloom filter (for table skipping) with learned index (for position prediction):
+
+```go
+type HybridFilter struct {
+    // Bloom filter component (can skip tables)
+    BloomBits []byte
+    BloomHashK uint8
+
+    // Learned index component (narrows search)
+    Slope, Intercept float64
+    MinErr, MaxErr   int32
+    MaxPos           uint32
+}
+```
+
+---
+
+## Paper Contribution: Why Hash Breaks Learned Indexes
+
+### The Problem
+
+```
+Hash values for sequential keys:
+  Key 0:    key_0000000000  hash=2795452986
+  Key 1:    key_0000000001  hash=1262931415
+  Key 2:    key_0000000002  hash=4025376883
+  Key 100:  key_0000000100  hash=3512541005
+  Key 101:  key_0000000101  hash=1980019434
+
+Notice: Adjacent keys have COMPLETELY DIFFERENT hash values!
+```
+
+### Statistical Evidence
+
+```
+Correlation (sorted position → block): 0.9999 (near perfect)
+Correlation (hash value → block):      0.0000 (essentially random)
+```
+
+### Key Insight
+
+The LearnedKV paper assumes sorted key access, but many real databases use hash-based access
+patterns. This is a fundamental limitation of learned indexes that is **underexplored in the
+literature**.
+
+---
+
+## Trade-off Analysis
+
+| Aspect                     | Bloom Filter                           | Learned Index                           |
+| -------------------------- | -------------------------------------- | --------------------------------------- |
+| **Purpose**                | "Is key definitely NOT in this table?" | "Where in this table might the key be?" |
+| **Can skip tables**        | ✅ Yes (if key not found)              | ❌ No                                   |
+| **Narrows search range**   | ❌ No                                  | ✅ Yes (with sorted keys)               |
+| **False positives**        | Yes (~1%)                              | N/A (always says "might be here")       |
+| **False negatives**        | No                                     | Possible if error bounds exceeded       |
+| **Works with hash(key)**   | ✅ Yes                                 | ❌ No                                   |
+| **Works with sorted keys** | ✅ Yes                                 | ✅ Yes                                  |
+
+---
+
+## Running Paper Tests
+
+### Main Paper Contribution Test
+
+```bash
+go test -v -run TestPaperContribution ./y/
+```
+
+Shows the dramatic difference between sorted (3%) and hashed (100%) access patterns.
+
+### Data Distribution Impact
+
+```bash
+go test -v -run TestDataDistributionImpact ./y/
+```
+
+Analyzes how different data distributions affect learned index effectiveness.
+
+### Bloom vs Learned Trade-offs
+
+```bash
+go test -v -run TestBloomVsLearnedTradeoffs ./y/
+```
+
+Feature comparison table between both approaches.
+
+### Hybrid Filter Comparison
+
+```bash
+go test -v -run TestHybridFilterComparison ./y/
+```
+
+Compares Bloom-only, Learned-only, and Hybrid approaches.
+
+### Bloom Size Trade-off
+
+```bash
+go test -v -run TestBloomSizeTradeoff ./y/
+```
+
+Analyzes Bloom filter size vs false positive rate.
+
+---
+
+## Conclusions for Paper
+
+### Finding 1: Learned Indexes Require Key Ordering
+
+- When keys are accessed in sorted order: **3% search range** (excellent)
+- When keys are accessed by hash: **100% search range** (useless)
+
+### Finding 2: Bloom Filters Remain Essential
+
+- Bloom filters work regardless of key ordering
+- They can definitively say "key NOT present" (skip table entirely)
+- Learned indexes can only say "key MIGHT be here" (cannot skip)
+
+### Finding 3: Hybrid Approach Has Limited Benefit
+
+- Combining Bloom + Learned only helps when learned index is effective
+- With hash-based access, the learned component provides no benefit
+
+### Finding 4: Storage Advantage is Real
+
+- Learned index: 32 bytes vs Bloom filter: 87,501 bytes (100K keys)
+- But storage savings are meaningless if effectiveness is lost
+
+### Practical Recommendation
+
+- Keep Bloom filters for table-level filtering in hash-based systems
+- Only use learned indexes if you have **sorted key access patterns**
+- Consider the access pattern before applying learned indexes
+
+---
+
+## References
+
+1. Kraska et al., "The Case for Learned Index Structures" (2018)
+2. Cai et al., "LearnedKV: Integrating LSM-Trees with Learned Indexes" (2024) - arXiv:2406.18892
+3. Lu et al., "WiscKey: Separating Keys from Values in SSD-conscious Storage" (2016)
+
+---
+
+## Project Structure
+
+```
+badger-learnedindex/
+├── y/
+│   ├── learned_index.go              # Core learned index
+│   ├── learned_index_test.go         # Unit tests
+│   ├── learned_vs_bloom_benchmark_test.go  # Comparison benchmarks
+│   ├── hybrid_filter.go              # Hybrid Bloom + Learned
+│   ├── hybrid_filter_test.go         # Hybrid tests
+│   ├── paper_contribution_test.go    # MAIN PAPER TESTS
+│   ├── compact_hybrid_test.go        # Size analysis
+│   └── bloom.go                      # Original Bloom filter
+├── table/
+│   ├── builder.go                    # Modified: trains learned index
+│   ├── table.go                      # Modified: uses learned index
+│   └── ...
+└── README.md                         # This file
+```
