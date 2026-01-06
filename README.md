@@ -296,6 +296,14 @@ Can learned indexes replace Bloom filters in LSM-tree databases that use hash-ba
 However, when keys are accessed in **sorted order**, learned indexes achieve only **3% search
 range** - a 33x improvement!
 
+### The Solution
+
+We discovered the fix: **use key insertion position instead of hash values** for training. See
+`y/solution_test.go` for the demonstration.
+
+📖 **For detailed technical documentation, see
+[TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)**
+
 ---
 
 ## Quick Start
@@ -307,11 +315,14 @@ cd /Users/andrews/Desktop/badger-learnedindex
 # Build to verify no errors
 go build ./...
 
-# Run the MAIN paper contribution test
+# Run the MAIN paper contribution test (shows hash problem)
 go test -v -run TestPaperContribution ./y/
 
+# Run the SOLUTION test (shows how to fix it)
+go test -v -run TestLearnedIndexWithKeyPosition ./y/
+
 # Run all paper-related tests
-go test -v -run "TestPaper|TestDataDistribution|TestBloomVsLearned" ./y/
+go test -v -run "TestPaper|TestDataDistribution|TestBloomVsLearned|TestSolution" ./y/
 
 # Run comparison benchmarks
 go test -v -run TestCompareLearnedIndexVsBloomFilter ./y/
@@ -336,6 +347,8 @@ go test ./... -short
 | `y/hybrid_filter_test.go`              | Hybrid filter comparison tests                                |
 | `y/paper_contribution_test.go`         | **Main paper tests** - demonstrates when learned indexes fail |
 | `y/compact_hybrid_test.go`             | Bloom filter size/accuracy trade-off analysis                 |
+| `y/solution_test.go`                   | **Solution tests** - shows how to fix the hash problem        |
+| `TECHNICAL_DOCUMENTATION.md`           | Detailed technical documentation of all changes               |
 
 ## Files Modified
 
